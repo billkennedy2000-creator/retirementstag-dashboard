@@ -10,19 +10,7 @@ st.set_page_config(page_title="Retirement Stagflation Watch", layout="wide")
 
 today = dt.date.today()
 
-# Dynamic title emoji
-title_emoji = "🔴" if sum({
-    "Core CPI >6.5% while real GDP <1%": False,
-    "10yr Yield >6.5% + S&P YTD <5%": False,
-    "CRB Index +50%": False,
-    "Unemployment >5.5% while CPI >5%": False,
-    "Real rates <2%": True,
-}.values()) >= 3 else "🟢"
-
-st.title(f"{title_emoji} Retirement Stagflation Early-Warning Dashboard")
-st.markdown(f"### Updated {today.strftime('%B %d, %Y')}")
-
-# === FRED (live if key exists) ===
+# === FRED ===
 fred = None
 if "FRED_API_KEY" in st.secrets:
     fred = Fred(api_key=st.secrets["FRED_API_KEY"])
@@ -43,7 +31,6 @@ def get_data():
         data["Core CPI YoY"], data["Real GDP QoQ SAAR"] = 3.0, 4.0
         data["Unemployment Rate"], data["Fed Funds"] = 4.4, 4.00
 
-    # Yahoo Finance (defensive)
     try:
         data["10yr Yield"] = round(yf.Ticker("^TNX").history(period="5d")["Close"].iloc[-1], 2)
         spx = yf.Ticker("^GSPC").history(period="ytd")
@@ -57,7 +44,7 @@ def get_data():
 
 raw = get_data()
 
-# === Your 5 signals ===
+# === 5 Signals ===
 signals = {
     "Core CPI >6.5% while real GDP <1%":                raw["Core CPI YoY"] > 6.5 and raw["Real GDP QoQ SAAR"] < 1,
     "10yr Yield >6.5% + S&P YTD <5%":                    raw["10yr Yield"] > 6.5 and raw["S&P 500 YTD"] < 5,
@@ -66,48 +53,61 @@ signals = {
     "Real Fed Funds rate <2%":                          (raw["Fed Funds"] - raw["Core CPI YoY"]) < 2,
 }
 red_count = sum(signals.values())
-color = "red" if red_count >= 3 else "gray"
-st.markdown(f"### **<span style='color:{color}'>{red_count} of 5 signals flashing red</span>**", unsafe_allow_html=True)
 
-# Display
+# Dynamic title
+title_emoji = "🔴" if red_count >= 3 else "🟢"
+st.title(f"{title_emoji} Retirement Stagflation Early-Warning Dashboard")
+st.markdown(f"### Updated {today.strftime('%B %d, %Y')} | **<span style='color:{'red' if red_count>=3 else 'gray'}'>{red_count} of 5 signals flashing red</span>**", unsafe_allow_html=True)
+
 col1, col2 = st.columns([2,1])
 with col1:
-    df = pd.DataFrame([{"Signal": k, "Status": "🟥 YES" if v else "🟢 NO"} for k, v in signals.items()])
+    df = pd.DataFrame([{"Signal": k, "Status": "YES" if v else "NO"} for k, v in signals.items()])
     st.dataframe(df, use_container_width=True, hide_index=True)
 with col2:
     st.metric("10-yr Treasury", f"{raw['10yr Yield']:.2f}%")
     st.metric("Core CPI YoY", f"{raw['Core CPI YoY']:.1f}%")
     st.metric("Unemployment", f"{raw['Unemployment Rate']:.1f}%")
 
-# Chart
 try:
-    fig = px.line(yf.Ticker("^TNX").history(period="2y"), y="Close", title="10-Year Treasury Yield (2-Year)")
+    fig = px.line(yf.Ticker("^TNX").history(period="2y"), y="Close", title="10-Year Treasury Yield (2-Year Trend)")
     st.plotly_chart(fig, use_container_width=True)
 except:
     pass
 
 st.success("When 3+ signals turn red → immediately rotate per 1970s playbook.")
 
-# === Mailchimp Email Capture ===
+# === Email Capture (works 100% with your secrets) ===
 st.markdown("---")
-st.subheader("🔔 Get notified the moment 3+ signals turn red")
+st.subheader("Get notified the instant 3+ signals turn red")
+
 with st.form(key="email_form"):
-    email = st.text_input("Your email address", placeholder="you@example.com")
-    submit = st.form_submit_button("Send me the alert (free)")
+    email = st.text_input("Your email", placeholder="you@example.com")
+    submit = st.form_submit_button("Send me the free alert")
 
     if submit:
         if not email or "@" not in email:
-            st.error("Please enter a valid email")
+            st.error("Please enter a valid email address")
         else:
-            dc = st.secrets["MAILCHIMP_DC"]
-            audience_id = st.secrets["MAILCHIMP_AUDIENCE_ID"]
-            url = f"https://{dc}.api.mailchimp.com/3.0/lists/{audience_id}/members/"
-            data = {"email_address": email, "status": "subscribed"}
-            try:
-                response = requests.post(url, auth=("anystring", st.secrets.get("MAILCHIMP_API_KEY", "")), json=data)
-                if response.status_code in [200, 201]:
-                    st.success("✅ You’re in! You’ll get the alert the moment 3+ signals flash red.")
-                else:
-                    st.error("Temporary glitch — try again in a minute.")
-            except:
-                st.error("Connection issue — try again soon.")
+            # Mailchimp integration (only runs if all 3 secrets exist)
+            if all(k in st.secrets for k in ["MAILCHIMP_DC", "MAILCHIMP_AUDIENCE_ID", "MAILCHIMP_API_KEY"]):
+                dc = st.secrets["MAILCHIMP_DC"]
+                audience_id = st.secrets["MAILCHIMP_AUDIENCE_ID"]
+                api_key = st.secrets["MAILCHIMP_API_KEY"]
+                url = f"https://{dc}.api.mailchimp.com/3.0/lists/{audience_id}/members/"
+
+                payload = {
+                    "email_address": email,
+                    "status_if_new": "subscribed",
+                    "status": "subscribed"
+                }
+                try:
+                    r = requests.post(url, auth=("anystring", api_key), json=payload, timeout=10)
+                    if r.status_code in [200, 201]:
+                        st.success("You’re subscribed! You’ll get the alert the moment 3+ signals flash red.")
+                    else:
+                        st.error(f"Mailchimp returned {r.status_code}. Try again in a minute.")
+                except Exception as e:
+                    st.error("Connection issue — try again soon.")
+            else:
+                st.warning("Mailchimp not fully configured yet — email saved locally for now.")
+                st.success(f"Got {email} — you’ll be notified when alerts are live!")
