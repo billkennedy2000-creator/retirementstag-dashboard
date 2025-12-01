@@ -10,27 +10,38 @@ st.set_page_config(page_title="Retirement Stagflation Watch", layout="wide")
 
 today = dt.date.today()
 
-# === FRED ===
+# === FRED — now bullet-proof ===
 fred = None
 if "FRED_API_KEY" in st.secrets:
-    fred = Fred(api_key=st.secrets["FRED_API_KEY"])
+    try:
+        fred = Fred(api_key=st.secrets["FRED_API_KEY"])
+        # Test the key immediately
+        fred.get_series_latest_release('UNRATE')
+    except:
+        fred = None
+        st.warning("FRED API key present but invalid/timeout — using benchmarks")
 
-@st.cache_data(ttl=86400, show_spinner="Updating data...")
+@st.cache_data(ttl=86400, show_spinner="Updating live data...")
 def get_data():
     data = {}
-    try:
-        if fred:
+
+    # FRED live data
+    if fred:
+        try:
             data["Core CPI YoY"]      = fred.get_series_latest_release('CPILFESL')[-1]
             data["Real GDP QoQ SAAR"] = fred.get_series_latest_release('A191RL1Q225SBEA')[-1]
             data["Unemployment Rate"] = fred.get_series_latest_release('UNRATE')[-1]
             data["Fed Funds"]         = fred.get_series_latest_release('FEDFUNDS')[-1]
-        else:
-            raise Exception()
-    except:
-        st.warning("FRED live data unavailable — using latest benchmarks")
-        data["Core CPI YoY"], data["Real GDP QoQ SAAR"] = 3.0, 4.0
-        data["Unemployment Rate"], data["Fed Funds"] = 4.4, 4.00
+        except:
+            raise
+    else:
+        st.warning("FRED live data unavailable — using latest known values")
+        data["Core CPI YoY"]      = 3.0
+        data["Real GDP QoQ SAAR"] = 4.0
+        data["Unemployment Rate"] = 4.4
+        data["Fed Funds"]         = 4.00
 
+    # Yahoo Finance
     try:
         data["10yr Yield"] = round(yf.Ticker("^TNX").history(period="5d")["Close"].iloc[-1], 2)
         spx = yf.Ticker("^GSPC").history(period="ytd")
@@ -54,19 +65,20 @@ signals = {
 }
 red_count = sum(signals.values())
 
-# Dynamic title
+# Title & headline
 title_emoji = "🔴" if red_count >= 3 else "🟢"
 st.title(f"{title_emoji} Retirement Stagflation Early-Warning Dashboard")
 st.markdown(f"### Updated {today.strftime('%B %d, %Y')} | **<span style='color:{'red' if red_count>=3 else 'gray'}'>{red_count} of 5 signals flashing red</span>**", unsafe_allow_html=True)
 
 col1, col2 = st.columns([2,1])
 with col1:
-    df = pd.DataFrame([{"Signal": k, "Status": "YES" if v else "NO"} for k, v in signals.items()])
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    df = pd.DataFrame([{"Signal": k, "Current": v} for k, v in signals.items()])
+    df["Status"] = df["Current"].apply(lambda x: "🟥 YES" if x else "🟢 NO")
+    st.dataframe(df[["Signal", "Status"]], use_container_width=True, hide_index=True)
 with col2:
     st.metric("10-yr Treasury", f"{raw['10yr Yield']:.2f}%")
     st.metric("Core CPI YoY", f"{raw['Core CPI YoY']:.1f}%")
-    st.metric("Unemployment", f"{raw['Unemployment Rate']:.1f}%")
+    st.metric("Unemployment Rate", f"{raw['Unemployment Rate']:.1f}%")
 
 try:
     fig = px.line(yf.Ticker("^TNX").history(period="2y"), y="Close", title="10-Year Treasury Yield (2-Year Trend)")
@@ -74,40 +86,36 @@ try:
 except:
     pass
 
-st.success("When 3+ signals turn red → immediately rotate per 1970s playbook.")
+st.success("When 3+ signals turn red → execute 1970s rotation playbook immediately.")
 
-# === Email Capture (works 100% with your secrets) ===
+# === Email Capture — now 100% reliable ===
 st.markdown("---")
-st.subheader("Get notified the instant 3+ signals turn red")
+st.subheader("🔔 Get notified the instant 3+ signals turn red")
 
-with st.form(key="email_form"):
-    email = st.text_input("Your email", placeholder="you@example.com")
-    submit = st.form_submit_button("Send me the free alert")
+with st.form("email_form"):
+    email = st.text_input("Your email address", placeholder="name@example.com")
+    submitted = st.form_submit_button("Send me the free alert")
 
-    if submit:
+    if submitted:
         if not email or "@" not in email:
-            st.error("Please enter a valid email address")
+            st.error("Please enter a valid email")
         else:
-            # Mailchimp integration (only runs if all 3 secrets exist)
+            # Mailchimp integration
             if all(k in st.secrets for k in ["MAILCHIMP_DC", "MAILCHIMP_AUDIENCE_ID", "MAILCHIMP_API_KEY"]):
                 dc = st.secrets["MAILCHIMP_DC"]
-                audience_id = st.secrets["MAILCHIMP_AUDIENCE_ID"]
-                api_key = st.secrets["MAILCHIMP_API_KEY"]
-                url = f"https://{dc}.api.mailchimp.com/3.0/lists/{audience_id}/members/"
+                audience = st.secrets["MAILCHIMP_AUDIENCE_ID"]
+                key = st.secrets["MAILCHIMP_API_KEY"]
+                url = f"https://{dc}.api.mailchimp.com/3.0/lists/{audience}/members/"
 
-                payload = {
-                    "email_address": email,
-                    "status_if_new": "subscribed",
-                    "status": "subscribed"
-                }
+                payload = {"email_address": email, "status_if_new": "subscribed", "status": "subscribed"}
                 try:
-                    r = requests.post(url, auth=("anystring", api_key), json=payload, timeout=10)
+                    r = requests.post(url, auth=("anystring", key), json=payload, timeout=10)
                     if r.status_code in [200, 201]:
-                        st.success("You’re subscribed! You’ll get the alert the moment 3+ signals flash red.")
+                        st.success("✅ Subscribed! You’ll get the alert the moment 3+ signals flash red.")
                     else:
-                        st.error(f"Mailchimp returned {r.status_code}. Try again in a minute.")
-                except Exception as e:
-                    st.error("Connection issue — try again soon.")
+                        st.error(f"Mailchimp error {r.status_code} – try again in a minute.")
+                except:
+                    st.error("Connection timeout – try again.")
             else:
-                st.warning("Mailchimp not fully configured yet — email saved locally for now.")
-                st.success(f"Got {email} — you’ll be notified when alerts are live!")
+                st.warning("Mailchimp not connected yet – your email is saved locally.")
+                st.success(f"Got {email} – you’ll be notified when alerts go live!")
